@@ -19,16 +19,19 @@ object IngestionJob {
     import spark.implicits._
 
     try {
-      val inputPath = "/home/aashishvinu/tasks/spark_iceberg/data/input/yellow_tripdata_2025-02.parquet"
+      val inputDir = "/home/aashishvinu/tasks/spark_iceberg/data/input"
+
+      logger.info(s"Reading all Parquet files from directory: $inputDir")
 
       val rawDF = spark.read
-        .option("mergeSchema", "true")
-        .option("pathGlobFilter", "*.parquet")
-        .parquet(inputPath)
+        .option("mergeSchema", "true")         
+        .parquet(inputDir)                       
 
       val rawCount = rawDF.count()
+      logger.info(s"Total raw records found: $rawCount")
+
       if (rawCount == 0) {
-        logger.warn("No records in input file → exiting")
+        logger.warn("No records found in input directory → exiting")
         return
       }
 
