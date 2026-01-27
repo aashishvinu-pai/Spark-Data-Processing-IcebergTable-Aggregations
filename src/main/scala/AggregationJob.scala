@@ -7,122 +7,55 @@ object AggregationJob {
 
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder()
-      .appName("NYC Taxi Ingestion")
+      .appName("NYC Taxi Aggregation - Iceberg")
       .master("local[*]")
       .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .config("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkSessionCatalog")
-      .config("spark.sql.catalog.spark_catalog.type", "hadoop")
-      .config("spark.sql.catalog.spark_catalog.warehouse", "/home/aashishvinu/tasks/simple_scala_spark_job/data/warehouse")
+      .config("spark.sql.catalog.ice_hadoop", "org.apache.iceberg.spark.SparkCatalog")
+      .config("spark.sql.catalog.ice_hadoop.type", "hadoop")
+      .config("spark.sql.catalog.ice_hadoop.warehouse", "/home/aashishvinu/tasks/spark_iceberg/spark-warehouse")
+      .config("spark.sql.defaultCatalog", "ice_hadoop")
       .getOrCreate()
 
     import spark.implicits._
 
     try {
-      val rawTable = "spark_catalog.default.nyc_taxi_trips_raw"
+      val rawTable = "nyc_taxi_trips_raw"
 
       if (!spark.catalog.tableExists(rawTable)) {
-        logger.warn("Raw table does not exist yet. Please run IngestionJob first.")
-        return
+        logger.error(s"Raw table '$rawTable' not found in catalog")
+        sys.exit(1)
       }
 
       val rawDF = spark.table(rawTable)
-      val rawCount = rawDF.count()
-      logger.info(s"Records in raw table: $rawCount")
+      val dailySummary = rawDF
+        .groupBy("pickup_date")
+        .agg(
+          count("*").as("trip_count"),
+          sum("trip_distance").as("total_distance"),
+          avg("fare_amount").as("avg_fare"),
+          sum("total_amount").as("total_revenue")
+        )
+        .orderBy("pickup_date")
 
-      if (rawCount == 0) {
-        logger.info("No data in raw table. Nothing to aggregate.")
-        return
-      }
+      dailySummary.show(10, truncate = false)
+      val summaryTable = "nyc_taxi_daily_summary"
 
-      // Find the latest processed date in the summary table
-      val summaryTable = "spark_catalog.default.nyc_taxi_daily_summary"
-      val latestProcessedDate = if (spark.catalog.tableExists(summaryTable)) {
-        spark.table(summaryTable)
-          .agg(max("pickup_date"))
-          .collect()
-          .headOption
-          .flatMap(row => Option(row.getDate(0)))
-          .orNull
-      } else null
-
-      // Incremental processing
-      val incrementalDF = if (latestProcessedDate != null) {
-        rawDF.filter($"pickup_date" > lit(latestProcessedDate))
+      if (spark.catalog.tableExists(summaryTable)) {
+        logger.info(s"Appending to existing table $summaryTable")
+        dailySummary.writeTo(summaryTable).append()
       } else {
-        rawDF
+        logger.info(s"Creating new Iceberg table $summaryTable")
+        dailySummary.writeTo(summaryTable)
+          .partitionedBy($"pickup_date")
+          .create()
       }
 
-      val incCount = incrementalDF.count()
-      logger.info(s"Incremental records to process: $incCount")
-
-      if (incCount == 0) {
-        logger.info("No new data to process.")
-        return
-      }
-
-      // ──────────────────────────────────────────────────────────────
-      // A. Daily Summary – append (create table automatically on first run)
-      // ──────────────────────────────────────────────────────────────
-      val dailySummary = incrementalDF.groupBy("pickup_date")
-        .agg(
-          count("*").as("total_trips"),
-          sum("passenger_count").as("total_passengers"),
-          sum("fare_amount").as("total_fare"),
-          avg("trip_distance").as("avg_distance"),
-          avg("trip_duration_minutes").as("avg_duration_min"),
-          avg("average_speed_mph").as("avg_speed_mph")
-        )
-
-      dailySummary.write
-        .format("iceberg")
-        .mode("append")
-        .saveAsTable("spark_catalog.default.nyc_taxi_daily_summary")
-
-      logger.info(s"Daily summary updated → ${dailySummary.count()} new rows processed")
-
-      // ──────────────────────────────────────────────────────────────
-      // B. Hourly Patterns – append
-      // ──────────────────────────────────────────────────────────────
-      val hourlyPatterns = incrementalDF.groupBy("pickup_date", "pickup_hour")
-        .agg(
-          count("*").as("trip_count"),
-          avg("fare_amount").as("avg_fare"),
-          avg("trip_distance").as("avg_distance"),
-          avg("trip_duration_minutes").as("avg_duration")
-        )
-
-      hourlyPatterns.write
-        .format("iceberg")
-        .mode("append")
-        .saveAsTable("spark_catalog.default.nyc_taxi_hourly_patterns")
-
-      // ──────────────────────────────────────────────────────────────
-      // C. Top 100 location pairs – full overwrite (small table)
-      // ──────────────────────────────────────────────────────────────
-      val topLocations = incrementalDF
-        .groupBy("pickup_location_id", "dropoff_location_id")
-        .agg(
-          count("*").as("trip_count"),
-          avg("fare_amount").as("avg_fare"),
-          avg("trip_distance").as("avg_distance")
-        )
-        .orderBy(desc("trip_count"))
-        .limit(100)
-
-      topLocations.write
-        .format("iceberg")
-        .mode("overwrite")
-        .saveAsTable("spark_catalog.default.nyc_taxi_top_locations")
-
-      // Quick validation sample
-      logger.info("Latest daily summary (top 5 newest days):")
-      spark.table("spark_catalog.default.nyc_taxi_daily_summary")
-        .orderBy(desc("pickup_date"))
-        .show(5, truncate = false)
+      logger.info("Aggregation completed successfully")
 
     } catch {
-      case e: Exception =>
-        logger.error("Aggregation job failed", e)
+      case e: Throwable =>
+        logger.error("Unexpected error in AggregationJob", e)
+        sys.exit(1)
     } finally {
       spark.stop()
     }

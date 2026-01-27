@@ -1,17 +1,17 @@
-from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+import findspark
+findspark.init("/opt/spark")   
+
+from pyspark.sql import SparkSession
 
 spark = SparkSession.builder \
-    .appName("NYC Taxi - Iceberg Ingestion (Jupyter)") \
-    .config("spark.jars.packages", 
-            "org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1") \
-    .config("spark.sql.extensions", 
-            "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
-    .config("spark.sql.catalog.spark_catalog", 
-            "org.apache.iceberg.spark.SparkSessionCatalog") \
-    .config("spark.sql.catalog.spark_catalog.type", "hadoop") \
-    .config("spark.sql.catalog.spark_catalog.warehouse", 
-            "/home/aashishvinu/tasks/simple_scala_spark_job/data/warehouse") \
+    .appName("Iceberg Jupyter Verification") \
+    .config("spark.jars", "/home/aashishvinu/.ivy2.5.2/jars/org.apache.iceberg_iceberg-spark-runtime-4.0_2.13-1.10.1.jar") \
+    .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
+    .config("spark.sql.catalog.ice_hadoop", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.ice_hadoop.type", "hadoop") \
+    .config("spark.sql.catalog.ice_hadoop.warehouse", "file:/home/aashishvinu/tasks/spark_iceberg/spark-warehouse") \
+    .config("spark.sql.defaultCatalog", "ice_hadoop") \
     .getOrCreate()
 
 print("Spark session created successfully!")
@@ -50,5 +50,6 @@ cleaned_df.printSchema()
 print(f"Cleaned record count: {cleaned_df.count():,}")
 cleaned_df.show(5, truncate=False)
 
-
+sbt clean update compile assembly
 spark-submit --class IngestionJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
+spark-submit --class AggregationJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
