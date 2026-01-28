@@ -35,17 +35,16 @@ object IngestionJob {
         return
       }
 
-      val renamedDF = rawDF
+      val renamedDF = rawDF.toDF(rawDF.columns.map(_.toLowerCase): _*)
         .withColumnRenamed("tpep_pickup_datetime", "pickup_datetime")
         .withColumnRenamed("tpep_dropoff_datetime", "dropoff_datetime")
         .withColumnRenamed("PULocationID", "pickup_location_id")
         .withColumnRenamed("DOLocationID", "dropoff_location_id")
 
-      val nonNullDF = renamedDF.na.drop(Seq("pickup_datetime", "dropoff_datetime", "trip_distance", "fare_amount"))
+      val nonNullDF = renamedDF.na.drop(Seq("pickup_datetime", "dropoff_datetime", "trip_distance"))
 
       val filteredDF = nonNullDF.filter(
         $"trip_distance" > 0 &&
-        $"fare_amount" > 0 &&
         $"total_amount" > 0
       )
 

@@ -1,5 +1,6 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.{DataFrame, SaveMode}
 import org.slf4j.LoggerFactory
 
 object AggregationJob {
@@ -16,45 +17,109 @@ object AggregationJob {
       .config("spark.sql.defaultCatalog", "ice_hadoop")
       .getOrCreate()
 
-    import spark.implicits._
-
+      import spark.implicits._
     try {
       val rawTable = "nyc_taxi_trips_raw"
-
       if (!spark.catalog.tableExists(rawTable)) {
-        logger.error(s"Raw table '$rawTable' not found in catalog")
+        logger.error(s"Source table '$rawTable' does not exist. Run ingestion first.")
         sys.exit(1)
       }
 
       val rawDF = spark.table(rawTable)
-      val dailySummary = rawDF
-        .groupBy("pickup_date")
-        .agg(
-          count("*").as("trip_count"),
-          sum("trip_distance").as("total_distance"),
-          avg("fare_amount").as("avg_fare"),
-          sum("total_amount").as("total_revenue")
-        )
-        .orderBy("pickup_date")
+      val rawCount = rawDF.count()
+      logger.info(s"Read $rawCount records from raw table")
 
-      dailySummary.show(10, truncate = false)
       val summaryTable = "nyc_taxi_daily_summary"
+      val lastProcessedDate = if (spark.catalog.tableExists(summaryTable)) {
+        spark.table(summaryTable)
+          .agg(max("pickup_date").as("max_date"))
+          .selectExpr("CAST(max_date AS STRING)")
+          .as[String]
+          .take(1)
+          .headOption
+          .getOrElse("1970-01-01")
+      } else {
+        logger.info("No previous summary table found → processing all data")
+        "1970-01-01"
+      }
+
+logger.info(s"Last processed date: $lastProcessedDate → filtering newer data only")
+
+      logger.info(s"Last processed date in summary: $lastProcessedDate → processing newer data")
+
+      val incrementalDF = rawDF.filter($"pickup_date" > lit(lastProcessedDate))
+      val incCount = incrementalDF.count()
+
+      if (incCount == 0) {
+        logger.info("No new data to process → exiting")
+        return
+      }
+
+      logger.info(s"Incremental records to process: $incCount (pickup_date > $lastProcessedDate)")
+
+      //Daily Summary
+      val dailySummary = incrementalDF.groupBy("pickup_date").agg(
+        count("*").as("total_trips"),
+        sum("passenger_count").cast("long").as("total_passengers"),   
+        sum("total_amount").as("total_fare_amount"),                 
+        avg("trip_distance").as("avg_trip_distance"),
+        avg("trip_duration_minutes").as("avg_trip_duration"),
+        avg("average_speed_mph").as("avg_speed")
+      ).orderBy("pickup_date")
+
+      val dailyCount = dailySummary.count()
+      logger.info(s"Computed $dailyCount daily summary rows")
 
       if (spark.catalog.tableExists(summaryTable)) {
-        logger.info(s"Appending to existing table $summaryTable")
         dailySummary.writeTo(summaryTable).append()
+
+        logger.info(s"Appended to $summaryTable")
       } else {
-        logger.info(s"Creating new Iceberg table $summaryTable")
         dailySummary.writeTo(summaryTable)
+          .partitionedBy($"pickup_date")
+          .create()
+
+        logger.info(s"Created partitioned table $summaryTable")
+      }
+
+      val hourlyPatterns = incrementalDF.groupBy("pickup_date", "pickup_hour").agg(
+        count("*").as("trip_count"),
+        avg("total_amount").as("avg_fare"),
+        avg("trip_distance").as("avg_distance"),
+        avg("trip_duration_minutes").as("avg_duration")
+      ).orderBy("pickup_date", "pickup_hour")
+
+      val hourlyTable = "nyc_taxi_hourly_patterns"
+      val hourlyCount = hourlyPatterns.count()
+      logger.info(s"Computed $hourlyCount hourly pattern rows")
+
+      if (spark.catalog.tableExists(hourlyTable)) {
+        hourlyPatterns.writeTo(hourlyTable).append()
+      } else {
+        hourlyPatterns.writeTo(hourlyTable)
           .partitionedBy($"pickup_date")
           .create()
       }
 
-      logger.info("Aggregation completed successfully")
+      //Top Locations
+      val topLocations = incrementalDF.groupBy("pickup_location_id", "dropoff_location_id").agg(
+        count("*").as("trip_count"),
+        avg("total_amount").as("avg_fare"),
+        avg("trip_distance").as("avg_distance")
+      ).orderBy(desc("trip_count"))
+       .limit(100)
+
+      val topLocTable = "nyc_taxi_top_locations"
+      val topCount = topLocations.count()
+      logger.info(s"Computed top 100 locations ($topCount rows)")
+      topLocations.writeTo(topLocTable)
+        .createOrReplace()
+
+      logger.info("All aggregations completed successfully")
 
     } catch {
       case e: Throwable =>
-        logger.error("Unexpected error in AggregationJob", e)
+        logger.error("Error in aggregation job", e)
         sys.exit(1)
     } finally {
       spark.stop()

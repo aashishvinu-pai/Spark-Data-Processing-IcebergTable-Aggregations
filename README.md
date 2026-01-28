@@ -1,11 +1,14 @@
 from pyspark.sql import functions as F
 import findspark
-findspark.init("/opt/spark")   
+findspark.init("/opt/spark")
 
 from pyspark.sql import SparkSession
 
+# ───────────────────────────────────────────────
+#          Spark + Iceberg Session Setup
+# ───────────────────────────────────────────────
 spark = SparkSession.builder \
-    .appName("Iceberg Jupyter Verification") \
+    .appName("Iceberg Tables Quick Verification") \
     .config("spark.jars", "/home/aashishvinu/.ivy2.5.2/jars/org.apache.iceberg_iceberg-spark-runtime-4.0_2.13-1.10.1.jar") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.ice_hadoop", "org.apache.iceberg.spark.SparkCatalog") \
@@ -14,42 +17,75 @@ spark = SparkSession.builder \
     .config("spark.sql.defaultCatalog", "ice_hadoop") \
     .getOrCreate()
 
-print("Spark session created successfully!")
-spark
+print("Spark session ready ✓")
+print(f"Spark version: {spark.version}\n")
+
+# ───────────────────────────────────────────────
+#          Helper to display Iceberg table nicely
+# ───────────────────────────────────────────────
+def show_table_info(table_name, sample_rows=5, truncate=False):
+    print(f"\n{'═' * 70}")
+    print(f"TABLE: {table_name}")
+    print(f"{'═' * 70}")
+    
+    try:
+        if not spark.catalog.tableExists(table_name):
+            print("→ Table does NOT exist in the catalog.")
+            return
+        
+        df = spark.table(table_name)
+        
+        # Basic info
+        print("Schema:")
+        df.printSchema()
+        
+        count = df.count()
+        print(f"\nTotal rows: {count:,}")
+        
+        if count == 0:
+            print("→ Table is empty.")
+            return
+        
+        # Sample data
+        print(f"\nSample ({sample_rows} rows):")
+        df.show(sample_rows, truncate=truncate)
+        
+        # Partition information (if any)
+        print("\nPartition info:")
+        spark.sql(f"""
+            DESCRIBE TABLE EXTENDED {table_name}
+        """).filter(
+            "col_name IN ('Partition Columns', 'Partition Spec')"
+        ).show(truncate=False)
+        
+    except Exception as e:
+        print(f"Error reading {table_name}: {str(e)}")
+
+# ───────────────────────────────────────────────
+#          Check all assignment tables
+# ───────────────────────────────────────────────
+tables = [
+    "nyc_taxi_trips_raw",
+    "nyc_taxi_daily_summary",
+    "nyc_taxi_hourly_patterns",
+    "nyc_taxi_top_locations"
+]
+
+for table in tables:
+    show_table_info(table)
+
+# Optional: quick list of all tables in the catalog
+print(f"\n{'─' * 70}")
+print("All tables in catalog:")
+spark.sql("SHOW TABLES").show(truncate=False)
+
+print("\nDone.")
 
 
-input_path = "/home/aashishvinu/tasks/simple_scala_spark_job/data/input/yellow_tripdata_2025-02.parquet"
-
-print("=== Reading raw data ===")
-raw_df = spark.read \
-    .option("mergeSchema", "true") \
-    .option("pathGlobFilter", "*.parquet") \
-    .parquet(input_path)
-
-raw_df.printSchema()
-print(f"Raw record count: {raw_df.count():,}")
-raw_df.show(5, truncate=False)
-
-c_df = raw_df.select(F.col("tpep_pickup_datetime"))
-c_df.show()
-
-
-print("=== Cleaning & renaming columns ===")
-
-cleaned_df = raw_df \
-    .withColumnRenamed("tpep_pickup_datetime", "pickup_datetime") \
-    .withColumnRenamed("tpep_dropoff_datetime", "dropoff_datetime") \
-    .withColumnRenamed("PULocationID", "pickup_location_id") \
-    .withColumnRenamed("DOLocationID", "dropoff_location_id") \
-    .select([F.col(c).alias(c.lower()) for c in raw_df.columns]) \
-    .na.drop(subset=["pickup_datetime", "dropoff_datetime", "trip_distance", "fare_amount"]) \
-    .filter((F.col("trip_distance") > 0) & (F.col("fare_amount") > 0) & (F.col("total_amount") > 0))
-
-cleaned_df.printSchema()
-
-print(f"Cleaned record count: {cleaned_df.count():,}")
-cleaned_df.show(5, truncate=False)
+# ───────────────────────────────────────────────
+#          Execution Command (Vrithi aakit add to readme)
+# ───────────────────────────────────────────────
 
 sbt clean update compile assembly
 spark-submit --class IngestionJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
-spark-submit --class AggregationJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
+spark-submit --class AggregationJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
