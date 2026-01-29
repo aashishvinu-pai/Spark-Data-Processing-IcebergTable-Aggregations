@@ -2,26 +2,35 @@ name := "nyc-taxi-iceberg"
 version := "1.0"
 scalaVersion := "2.13.17"
 
+val sparkVersion = "3.5.5"
+val icebergVersion = "1.9.0"
+
 libraryDependencies ++= Seq(
-  "org.apache.spark" %% "spark-core" % "4.1.1" % "provided",
-  "org.apache.spark" %% "spark-sql" % "4.1.1" % "provided",
-  "org.apache.iceberg" % "iceberg-spark-runtime-4.0_2.13" % "1.10.1",
-  "ai.prevalent" %% "sdspecore" % "0.1.0-SNAPSHOT",
+  // Spark dependencies - provided if running on cluster
+  "org.apache.spark" %% "spark-core" % sparkVersion % "provided",
+  "org.apache.spark" %% "spark-sql"  % sparkVersion % "provided",
+  "org.apache.spark" %% "spark-hive" % sparkVersion % "provided",
+  
+  // Iceberg runtime for Spark 3.5
+  "org.apache.iceberg" %% "iceberg-spark-runtime-3.5" % icebergVersion,
+
+  // Your internal util library
+  "sds-pe-core" %% "sds-pe-core" % "1.0.0",
+
+  // Logging
   "ch.qos.logback" % "logback-classic" % "1.5.12"
 )
 
-
-resolvers += Resolver.mavenLocal()
+// Allow sbt to find your locally published SDS artifact
+resolvers += Resolver.mavenLocal
 resolvers += "Maven Central" at "https://repo1.maven.org/maven2/"
 
-assembly / assemblyShadeRules := Seq(
-  ShadeRule.rename("org.slf4j.**" -> "shaded.slf4j.@1").inAll
-)
-
+// Assembly settings
+import sbtassembly.AssemblyPlugin.autoImport._
 assembly / assemblyMergeStrategy := {
-  case PathList("META-INF", xs @ _*)             => MergeStrategy.discard
-  case "reference.conf"                          => MergeStrategy.concat
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  case "reference.conf"              => MergeStrategy.concat
   case x if x.endsWith(".class") && x.contains("scala/") => MergeStrategy.discard
-  case x if x.contains("scala/")                 => MergeStrategy.discard
-  case _                                         => MergeStrategy.first
+  case x if x.contains("scala/")     => MergeStrategy.discard
+  case _                             => MergeStrategy.first
 }

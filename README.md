@@ -9,13 +9,13 @@ from pyspark.sql import SparkSession
 # ───────────────────────────────────────────────
 spark = SparkSession.builder \
     .appName("Iceberg Tables Quick Verification") \
-    .config("spark.jars", "/home/aashishvinu/.ivy2.5.2/jars/org.apache.iceberg_iceberg-spark-runtime-4.0_2.13-1.10.1.jar") \
     .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions") \
     .config("spark.sql.catalog.ice_hadoop", "org.apache.iceberg.spark.SparkCatalog") \
     .config("spark.sql.catalog.ice_hadoop.type", "hadoop") \
     .config("spark.sql.catalog.ice_hadoop.warehouse", "file:/home/aashishvinu/tasks/spark_iceberg/spark-warehouse") \
     .config("spark.sql.defaultCatalog", "ice_hadoop") \
     .getOrCreate()
+
 
 print("Spark session ready ✓")
 print(f"Spark version: {spark.version}\n")
@@ -88,4 +88,6 @@ print("\nDone.")
 
 sbt clean update compile assembly
 spark-submit --class IngestionJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
-spark-submit --class AggregationJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
+
+spark-submit --class IngestionJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
+spark-submit --class AggregationJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar

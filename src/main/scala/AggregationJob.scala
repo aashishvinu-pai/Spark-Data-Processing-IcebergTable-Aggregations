@@ -1,26 +1,30 @@
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.{DataFrame, SaveMode}
 import org.slf4j.LoggerFactory
+import ai.prevalent.sdspecore.sparkbase.table.iceberg.{SDSIcebergReader, SDSIcebergWriter}
 
 object AggregationJob {
   private val logger = LoggerFactory.getLogger(getClass)
 
   def main(args: Array[String]): Unit = {
     val spark = SparkSession.builder()
-      .appName("NYC Taxi Aggregation - Iceberg")
+      .appName("NYC Taxi Aggregation - Iceberg with SDS")
       .master("local[*]")
       .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-      .config("spark.sql.catalog.ice_hadoop", "org.apache.iceberg.spark.SparkCatalog")
-      .config("spark.sql.catalog.ice_hadoop.type", "hadoop")
-      .config("spark.sql.catalog.ice_hadoop.warehouse", "/home/aashishvinu/tasks/spark_iceberg/spark-warehouse")
-      .config("spark.sql.defaultCatalog", "ice_hadoop")
+      .config("spark.sql.catalog.iceberg_catalog", "org.apache.iceberg.spark.SparkCatalog")
+      .config("spark.sql.catalog.iceberg_catalog.type", "hadoop")
+      .config("spark.sql.catalog.iceberg_catalog.warehouse", "/home/aashishvinu/tasks/spark_iceberg/spark-warehouse")
+      .config("spark.sql.defaultCatalog", "iceberg_catalog")
       .getOrCreate()
 
-      import spark.implicits._
+    import spark.implicits._
+
+    val reader = new SDSIcebergReader(spark)
+    val writer = new SDSIcebergWriter(spark)
+
     try {
-      val rawTable = "nyc_taxi_trips_raw"
-      if (!spark.catalog.tableExists(rawTable)) {
+      val rawTable = "iceberg_catalog.default.nyc_taxi_trips_raw"
+ if (!spark.catalog.tableExists(rawTable)) {
         logger.error(s"Source table '$rawTable' does not exist. Run ingestion first.")
         sys.exit(1)
       }
@@ -29,7 +33,7 @@ object AggregationJob {
       val rawCount = rawDF.count()
       logger.info(s"Read $rawCount records from raw table")
 
-      val summaryTable = "nyc_taxi_daily_summary"
+      val summaryTable = "iceberg_catalog.default.nyc_taxi_daily_summary"
       val lastProcessedDate = if (spark.catalog.tableExists(summaryTable)) {
         spark.table(summaryTable)
           .agg(max("pickup_date").as("max_date"))
@@ -43,7 +47,7 @@ object AggregationJob {
         "1970-01-01"
       }
 
-logger.info(s"Last processed date: $lastProcessedDate → filtering newer data only")
+      logger.info(s"Last processed date: $lastProcessedDate → filtering newer data only")
 
       logger.info(s"Last processed date in summary: $lastProcessedDate → processing newer data")
 
@@ -57,7 +61,6 @@ logger.info(s"Last processed date: $lastProcessedDate → filtering newer data o
 
       logger.info(s"Incremental records to process: $incCount (pickup_date > $lastProcessedDate)")
 
-      //Daily Summary
       val dailySummary = incrementalDF.groupBy("pickup_date").agg(
         count("*").as("total_trips"),
         sum("passenger_count").cast("long").as("total_passengers"),   
@@ -89,7 +92,7 @@ logger.info(s"Last processed date: $lastProcessedDate → filtering newer data o
         avg("trip_duration_minutes").as("avg_duration")
       ).orderBy("pickup_date", "pickup_hour")
 
-      val hourlyTable = "nyc_taxi_hourly_patterns"
+      val hourlyTable = "iceberg_catalog.default.nyc_taxi_hourly_patterns"
       val hourlyCount = hourlyPatterns.count()
       logger.info(s"Computed $hourlyCount hourly pattern rows")
 
@@ -101,7 +104,6 @@ logger.info(s"Last processed date: $lastProcessedDate → filtering newer data o
           .create()
       }
 
-      //Top Locations
       val topLocations = incrementalDF.groupBy("pickup_location_id", "dropoff_location_id").agg(
         count("*").as("trip_count"),
         avg("total_amount").as("avg_fare"),
@@ -109,7 +111,7 @@ logger.info(s"Last processed date: $lastProcessedDate → filtering newer data o
       ).orderBy(desc("trip_count"))
        .limit(100)
 
-      val topLocTable = "nyc_taxi_top_locations"
+      val topLocTable = "iceberg_catalog.default.nyc_taxi_top_locations"
       val topCount = topLocations.count()
       logger.info(s"Computed top 100 locations ($topCount rows)")
       topLocations.writeTo(topLocTable)
