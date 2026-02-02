@@ -60,7 +60,7 @@ object AggregationJob {
 
       logger.info(s"Found $newCount new trips to process!")
 
-      // --- Daily summary ---
+      // Daily summary
       val daily = newData.groupBy("pickup_date").agg(
         count("*").as("total_trips"),
         sum("passenger_count").cast("long").as("total_passengers"),
@@ -73,7 +73,7 @@ object AggregationJob {
       writer.append(daily, DAILY_TABLE, Array($"pickup_date"))
       logger.info(s"Wrote/updated daily summary (${daily.count()} rows)")
 
-      // --- Hourly summary ---
+      // Hourly summary
       val hourly = newData.groupBy("pickup_date", "pickup_hour").agg(
         count("*").as("trip_count"),
         avg("total_amount").as("avg_fare"),
@@ -84,7 +84,7 @@ object AggregationJob {
       writer.append(hourly, HOURLY_TABLE, Array($"pickup_date"))
       logger.info(s"Wrote/updated hourly patterns (${hourly.count()} rows)")
 
-      // --- Top 100 pickup-dropoff pairs ---
+      // Top 100 pickup 
       val top100 = newData.groupBy("pickup_location_id", "dropoff_location_id").agg(
         count("*").as("trip_count"),
         avg("total_amount").as("avg_fare"),
@@ -95,7 +95,7 @@ object AggregationJob {
       writer.overwritePartition(top100, TOP_LOC_TABLE)
       logger.info(s"Updated top 100 locations table (${top100.count()} rows)")
 
-      logger.info("All done! :)")
+      logger.info("Fully working asdsadsadsad")
 
     } catch {
       case e: Exception =>

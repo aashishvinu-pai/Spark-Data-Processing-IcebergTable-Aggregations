@@ -87,7 +87,5 @@ print("\nDone.")
 # ───────────────────────────────────────────────
 
 sbt clean update compile assembly
-spark-submit --class IngestionJob --packages org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.1 --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
-
 spark-submit --class IngestionJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
 spark-submit --class AggregationJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar

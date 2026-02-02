@@ -46,10 +46,7 @@ object IngestionJob {
 
       val enhancedDF = filteredDF
         .withColumn("trip_duration_minutes", (unix_timestamp($"dropoff_datetime") - unix_timestamp($"pickup_datetime")) / 60.0)
-        .withColumn("average_speed_mph",
-          when($"trip_duration_minutes" > 0, $"trip_distance" / ($"trip_duration_minutes" / 60.0))
-            .otherwise(lit(null))
-        )
+        .withColumn("average_speed_mph",($"trip_distance" / ($"trip_duration_minutes" / 60.0)))
         .withColumn("pickup_date", to_date($"pickup_datetime"))
         .withColumn("pickup_hour", hour($"pickup_datetime"))
         .filter($"trip_duration_minutes" > 0)
@@ -61,7 +58,6 @@ object IngestionJob {
       }
 
       val tableName = "default.nyc_taxi_trips_raw" 
-
       logger.info(s"Writing $finalCount records to table: $tableName")
 
       val writer = new SDSIcebergWriter(spark)
