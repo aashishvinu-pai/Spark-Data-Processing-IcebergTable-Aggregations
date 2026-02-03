@@ -115,35 +115,33 @@ End-to-end Spark + Apache Iceberg pipeline that ingests NYC Yellow Taxi trip dat
 
 ## How to Run Each Job
 
-### 1. Ingestion Job
-
+### 1. Clean Assembly
 ```bash
-spark-submit \
-  --class IngestionJob \
-  --master local[*] \
-  target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
+sbt clean update compile assembly
 ```
 
-### 2. Aggregation Job
+### 2. Ingestion Job
 
 ```bash
-spark-submit \
-  --class AggregationJob \
-  --master local[*] \
-  target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
+spark-submit --class IngestionJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar 
+```
+
+### 3. Aggregation Job
+
+```bash
+spark-submit --class AggregationJob --driver-memory 20g --executor-memory 20g target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
 ```
 
 ## Starting Spark Shell (to query tables)
 
 ```bash
-spark-shell \
-  --master local[*] \
+spark-shell --master "local[*]" \
   --conf "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
   --conf "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" \
   --conf "spark.sql.catalog.iceberg_catalog.type=hadoop" \
-  --conf "spark.sql.catalog.iceberg_catalog.warehouse=file:///absolute/path/to/your/project/spark-warehouse" \
+  --conf "spark.sql.catalog.iceberg_catalog.warehouse=/home/aashishvinu/tasks/spark_iceberg/spark-warehouse" \
   --conf "spark.sql.defaultCatalog=iceberg_catalog" \
-  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.13:1.9.0
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.13:1.9.0,ch.qos.logback:logback-classic:1.5.12
 ```
 
 Replace the warehouse path with your actual absolute path.
@@ -167,4 +165,5 @@ spark.sql("SELECT snapshot_id, committed_at FROM nyc_taxi_trips_raw.snapshots OR
 // Sample raw data
 spark.sql("SELECT * FROM nyc_taxi_trips_raw LIMIT 5").show(false)
 ```
+
 
