@@ -1,74 +1,122 @@
-# NYC Taxi Trips - Spark + Apache Iceberg Pipeline
+# NYC Taxi Iceberg Pipeline
 
-End-to-end ETL & analytics pipeline processing **NYC Yellow Taxi Trip Records** using **Apache Spark** and **Apache Iceberg** with partitioned tables, incremental processing, and aggregations.
+End-to-end Spark + Apache Iceberg pipeline that ingests NYC Yellow Taxi trip data, performs cleaning and enrichment, and creates aggregated summary tables using incremental processing.
 
-## Project Overview
+## Tables Created
 
-This project demonstrates a production-like data lake setup using:
-
-- **Apache Spark** (3.5.x) for distributed processing
-- **Apache Iceberg** as the table format (Hadoop catalog, local warehouse)
-- Custom SDS utilities (`SDSIcebergReader`, `SDSIcebergWriter`) for reading/writing
-- Incremental daily/hourly aggregations + top locations analysis
-- Schema evolution support & compaction
-
-### Tables Created
-
-| Table Name                        | Description                                  | Partitioned by     | Write Mode     |
-|-----------------------------------|----------------------------------------------|--------------------|----------------|
-| `nyc_taxi_trips_raw`              | Cleaned & enriched raw trip records          | `pickup_date`      | Append         |
-| `nyc_taxi_daily_summary`          | Daily aggregates (trips, passengers, fare…)  | `pickup_date`      | Append         |
-| `nyc_taxi_hourly_patterns`        | Hourly trip patterns                         | `pickup_date`      | Append         |
-| `nyc_taxi_top_locations`          | Top 100 pickup-dropoff location pairs        | (no partitioning)  | Overwrite      |
+| Table name                        | Purpose                                      | Partitioned by    | Write mode   |
+|-----------------------------------|----------------------------------------------|-------------------|--------------|
+| `nyc_taxi_trips_raw`              | Cleaned and enriched raw trip records        | `pickup_date`     | append       |
+| `nyc_taxi_daily_summary`          | Daily aggregates (trips, passengers, fare…)  | `pickup_date`     | append       |
+| `nyc_taxi_hourly_patterns`        | Hourly trip counts and averages              | `pickup_date`     | append       |
+| `nyc_taxi_top_locations`          | Top 100 pickup–dropoff location pairs by count | none            | overwrite    |
 
 ## Folder Structure
 
 ```
-nyc-taxi-iceberg/
+.
 ├── data/
-│   └── input/                    ← put your yellow_tripdata_*.parquet files here
-├── spark-warehouse/              ← Iceberg warehouse (auto-created)
+│   └── input/                    # Put yellow_tripdata_*.parquet files here
+├── spark-warehouse/              # Iceberg warehouse (auto-created)
 ├── src/
 │   └── main/
-│       └── scala/
-│           ├── IngestionJob.scala
-│           └── AggregationJob.scala
+│       └── scala/                # Main application code
 ├── project/
 │   ├── build.properties
 │   └── plugins.sbt
 ├── build.sbt
 └── README.md
 ```
-## Setup
 
-1. **Clone the repository**
+- `data/input/`  
+  Place raw NYC Yellow Taxi Parquet files here before running the ingestion job.
 
-   ```bash
-   git clone <your-repo-url>
-   cd nyc-taxi-iceberg
-   ```
+- `spark-warehouse/`  
+  Iceberg metadata and data files are written here using Hadoop catalog. Contains `default/` namespace with one subfolder per table.
 
-2. **Download sample data** (optional – at least 2 months recommended)
+- `src/main/scala/`  
+  Contains the two main jobs:  
+  - `IngestionJob.scala` — reads Parquet files, cleans data, adds derived columns, writes to raw table  
+  - `AggregationJob.scala` — incremental aggregations and top locations
 
-   Place Yellow Taxi Parquet files in `data/input/`, e.g.:
+## What Happens Inside Each Job
 
-   ```
-   data/input/
-   ├── yellow_tripdata_2023-01.parquet
-   └── yellow_tripdata_2023-02.parquet
-   ```
+### 1. IngestionJob.scala — Raw Data Ingestion
 
-3. **Build the project**
+**Main steps performed:**
 
-   ```bash
-   sbt clean assembly
-   ```
+1. Read all Parquet files from `data/input/` with schema merging enabled  
+   → `spark.read.option("mergeSchema", "true").parquet(inputDir)`
 
-   → Produces `target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar`
+2. **Normalization & cleaning**:
+   - Convert all column names to lowercase
+   - Rename columns for consistency:
+     - `tpep_pickup_datetime` → `pickup_datetime`
+     - `tpep_dropoff_datetime` → `dropoff_datetime`
+     - `pulocationid` → `pickup_location_id`
+     - `dolocationid` → `dropoff_location_id`
+   - Drop rows where critical columns are null:
+     - `pickup_datetime`, `dropoff_datetime`, `trip_distance`, `total_amount`
+   - Filter invalid records:
+     - `trip_distance > 0`
+     - `total_amount > 0`
+     - `fare_amount > 0`
 
-## Running the Pipeline
+3. **Enrichment / Derived columns**:
+   - `trip_duration_minutes` = `(unix_timestamp(dropoff) - unix_timestamp(pickup)) / 60.0`
+   - `average_speed_mph` = `trip_distance / (trip_duration_minutes / 60.0)` (null if duration ≤ 0)
+   - `pickup_date` = `to_date(pickup_datetime)`
+   - `pickup_hour` = `hour(pickup_datetime)`
+   - Final filter: `trip_duration_minutes > 0`
 
-### 1. Ingestion Job (Raw data → Iceberg)
+4. Write cleaned & enriched DataFrame to Iceberg table `default.nyc_taxi_trips_raw`  
+   - Partitioned by `pickup_date`
+   - Mode: **append**
+   - Uses `SDSIcebergWriter.append(...)`
+
+### 2. AggregationJob.scala — Incremental Aggregations
+
+**Main steps performed:**
+
+1. Read raw table using `SDSIcebergReader.read(...)`
+
+2. **Incremental logic**:
+   - Find the last processed date from `nyc_taxi_daily_summary` (or default to 1970-01-01)
+   - Filter raw data to only dates > last processed date
+
+3. **Daily summary** (appended to `nyc_taxi_daily_summary`):
+   - Group by `pickup_date`
+   - Aggregates:
+     - `total_trips` = `count(*)`
+     - `total_passengers` = `sum(passenger_count)`
+     - `total_fare` = `sum(total_amount)`
+     - `avg_distance` = `avg(trip_distance)`
+     - `avg_duration` = `avg(trip_duration_minutes)`
+     - `avg_speed` = `avg(average_speed_mph)`
+
+4. **Hourly patterns** (appended to `nyc_taxi_hourly_patterns`):
+   - Group by `pickup_date`, `pickup_hour`
+   - Aggregates:
+     - `trip_count` = `count(*)`
+     - `avg_fare` = `avg(total_amount)`
+     - `avg_distance` = `avg(trip_distance)`
+     - `avg_duration` = `avg(trip_duration_minutes)`
+
+5. **Top locations** (overwrite `nyc_taxi_top_locations`):
+   - Group by `pickup_location_id`, `dropoff_location_id`
+   - Aggregates:
+     - `trip_count` = `count(*)`
+     - `avg_fare` = `avg(total_amount)`
+     - `avg_distance` = `avg(trip_distance)`
+   - Order by `trip_count` descending → take top 100
+
+6. Write using `SDSIcebergWriter`:
+   - Append for daily & hourly
+   - Overwrite for top locations
+
+## How to Run Each Job
+
+### 1. Ingestion Job
 
 ```bash
 spark-submit \
@@ -77,7 +125,7 @@ spark-submit \
   target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
 ```
 
-### 2. Aggregation Job (Incremental summaries)
+### 2. Aggregation Job
 
 ```bash
 spark-submit \
@@ -86,7 +134,7 @@ spark-submit \
   target/scala-2.13/nyc-taxi-iceberg-assembly-1.0.jar
 ```
 
-## Querying the Tables (spark-shell example)
+## Starting Spark Shell (to query tables)
 
 ```bash
 spark-shell \
@@ -94,38 +142,29 @@ spark-shell \
   --conf "spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" \
   --conf "spark.sql.catalog.iceberg_catalog=org.apache.iceberg.spark.SparkCatalog" \
   --conf "spark.sql.catalog.iceberg_catalog.type=hadoop" \
-  --conf "spark.sql.catalog.iceberg_catalog.warehouse=file:///absolute/path/to/nyc-taxi-iceberg/spark-warehouse" \
+  --conf "spark.sql.catalog.iceberg_catalog.warehouse=file:///absolute/path/to/your/project/spark-warehouse" \
   --conf "spark.sql.defaultCatalog=iceberg_catalog" \
   --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.13:1.9.0
 ```
 
-Then inside the shell:
+Replace the warehouse path with your actual absolute path.
+
+## Example Queries in Spark Shell
 
 ```scala
+// List tables
 spark.sql("SHOW TABLES").show(false)
+
+// Row counts
+spark.sql("SELECT count(*) AS raw_count FROM nyc_taxi_trips_raw").show()
+spark.sql("SELECT count(*) AS daily_count FROM nyc_taxi_daily_summary").show()
+
+// Top 10 locations
 spark.sql("SELECT * FROM nyc_taxi_top_locations ORDER BY trip_count DESC LIMIT 10").show(false)
-spark.sql("SELECT * FROM nyc_taxi_trips_raw.snapshots ORDER BY committed_at DESC").show(false)
+
+// Recent snapshots
+spark.sql("SELECT snapshot_id, committed_at FROM nyc_taxi_trips_raw.snapshots ORDER BY committed_at DESC LIMIT 5").show(false)
+
+// Sample raw data
+spark.sql("SELECT * FROM nyc_taxi_trips_raw LIMIT 5").show(false)
 ```
-
-## Features Demonstrated
-
-- Schema merging across evolving Parquet files (`mergeSchema = true`)
-- Partitioned Iceberg tables (`pickup_date`)
-- Incremental processing (only new dates)
-- Daily + hourly aggregations
-- Top-N location pairs (overwrite)
-- Time travel via snapshots
-- Metadata inspection (`snapshots`, `files`, `manifests`)
-
-## Tech Stack
-
-- Scala 2.13.17
-- Spark 3.5.5
-- Iceberg 1.9.0 (spark-runtime-3.5)
-- sbt 1.12.0
-- Hadoop catalog (local filesystem warehouse)
-- Parquet files from NYC TLC: https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
-  
-<img width="533" height="264" alt="Screenshot 2026-01-29 131210" src="https://github.com/user-attachments/assets/d7032df4-f84d-40d5-9f19-a304534e3798" />
-
-
