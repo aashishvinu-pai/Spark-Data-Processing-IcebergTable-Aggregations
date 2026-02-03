@@ -14,7 +14,6 @@ End-to-end Spark + Apache Iceberg pipeline that ingests NYC Yellow Taxi trip dat
 ## Folder Structure
 
 ```
-.
 ├── data/
 │   └── input/                    # Put yellow_tripdata_*.parquet files here
 ├── spark-warehouse/              # Iceberg warehouse (auto-created)
@@ -168,3 +167,4 @@ spark.sql("SELECT snapshot_id, committed_at FROM nyc_taxi_trips_raw.snapshots OR
 // Sample raw data
 spark.sql("SELECT * FROM nyc_taxi_trips_raw LIMIT 5").show(false)
 ```
+
